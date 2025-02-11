@@ -28,7 +28,6 @@ class Pipe:
 
     def __init__(self):
         self.valves = self.Valves()
-        self.state: State = State.EMPTY
 
     def pipes(self):
         if self.valves.API_KEY:
@@ -75,21 +74,24 @@ class Pipe:
 }}
 ```\n'''.format(err_msg)
 
+    @staticmethod
+    def get_model_id(pipe_id: str) -> str:
+        if "." in pipe_id:
+            _,pipe_id= pipe_id.split(".", 1)
+        return pipe_id
+
     async def pipe(self, body: dict) ->AsyncGenerator[str, None]:
-        self.state = State.EMPTY
+        state = State.EMPTY
         try:
             async with (AsyncOpenAI(api_key=self.valves.API_KEY, base_url=self.valves.BASE_URL) as client):
-                model = body["model"]
-                model_s = model.split(".")
-                model_id = model_s[len(model_s) - 1]
                 chat_completion = await client.chat.completions.create(
-                    model=model_id,
+                    model=self.get_model_id(body["model"]),
                     messages=body["messages"],
                     stream=True
                 )
                 response = chat_completion.response
-                iter = response.aiter_lines()
-                first_line = await iter.__anext__()
+                line_iter = response.aiter_lines()
+                first_line = await line_iter.__anext__()
                 try:
                     first_line_json = json.loads(first_line)
                     if 'error' in first_line_json and 'message' in first_line_json['error']:
@@ -100,7 +102,7 @@ class Pipe:
 
                 decoder = client._make_sse_decoder()
                 decoder.decode(first_line)
-                async for line in iter:
+                async for line in line_iter:
                     sse = decoder.decode(line)
                     if not sse:
                         continue
@@ -113,15 +115,15 @@ class Pipe:
                         if 'reasoning_content' in delta:
                             reasoning_content = delta['reasoning_content']
                             if reasoning_content:
-                                if self.state != State.THINKING:
-                                        self.state = State.THINKING
+                                if state != State.THINKING:
+                                        state = State.THINKING
                                         yield "<think>"
                                 yield reasoning_content
                         if 'content' in delta:
                             content = delta['content']
                             if content:
-                                if self.state == State.THINKING:
-                                        self.state = State.CONTENT
+                                if state == State.THINKING:
+                                        state = State.CONTENT
                                         yield "</think>"
                                 yield content
         except Exception as e:
@@ -134,11 +136,11 @@ if __name__ == '__main__':
         body = {
             "model": "test.deepseek-r1",
             "messages": [
-                {
+                  {
                     "role": "user",
-                    "content": "你好",
-                }
-            ],
+                    "content": "你好"
+                  }
+                ]
         }
         pipe = Pipe()
         async for item in pipe.pipe(body):
