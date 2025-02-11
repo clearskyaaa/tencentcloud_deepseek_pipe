@@ -5,6 +5,7 @@ import requests
 from openai import AsyncOpenAI
 import json
 
+
 class State(Enum):
     EMPTY = 1
     THINKING = 2
@@ -39,9 +40,7 @@ class Pipe:
                     "Content-Type": "application/json",
                 }
 
-                r = requests.get(
-                    f"{self.valves.BASE_URL}/models", headers=headers
-                )
+                r = requests.get(f"{self.valves.BASE_URL}/models", headers=headers)
                 models = r.json()
 
                 return [
@@ -55,7 +54,7 @@ class Pipe:
                 return [
                     {
                         "id": "error",
-                        "name": "Error fetching models. Please check your API Key."
+                        "name": "Error fetching models. Please check your API Key.",
                     },
                 ]
         else:
@@ -67,35 +66,65 @@ class Pipe:
             ]
 
     @staticmethod
-    def generate_json_error(err_msg:str):
-        return '''```json
+    def generate_json_error(err_msg: str):
+        return """```json
 {{
   "error": "{}",
 }}
-```\n'''.format(err_msg)
+```\n""".format(
+            err_msg
+        )
 
     @staticmethod
     def get_model_id(pipe_id: str) -> str:
         if "." in pipe_id:
-            _,pipe_id= pipe_id.split(".", 1)
+            _, pipe_id = pipe_id.split(".", 1)
         return pipe_id
 
-    async def pipe(self, body: dict) ->AsyncGenerator[str, None]:
+    async def pipe(
+        self, body: dict, __event_emitter__=None
+    ) -> AsyncGenerator[str, None]:
         state = State.EMPTY
         try:
-            async with (AsyncOpenAI(api_key=self.valves.API_KEY, base_url=self.valves.BASE_URL) as client):
+            async with AsyncOpenAI(
+                api_key=self.valves.API_KEY, base_url=self.valves.BASE_URL
+            ) as client:
+                await __event_emitter__(
+                    {
+                        "type": "status",
+                        "data": {"description": "连接建立中...", "done": False},
+                    }
+                )
+
                 chat_completion = await client.chat.completions.create(
                     model=self.get_model_id(body["model"]),
                     messages=body["messages"],
-                    stream=True
+                    stream=True,
+                )
+                await __event_emitter__(
+                    {
+                        "type": "status",
+                        "data": {"description": "连接建立完成", "done": True},
+                    }
                 )
                 response = chat_completion.response
                 line_iter = response.aiter_lines()
                 first_line = await line_iter.__anext__()
                 try:
                     first_line_json = json.loads(first_line)
-                    if 'error' in first_line_json and 'message' in first_line_json['error']:
-                        yield self.generate_json_error(first_line_json['error']['message'])
+                    if (
+                        "error" in first_line_json
+                        and "message" in first_line_json["error"]
+                    ):
+                        await __event_emitter__(
+                            {
+                                "type": "status",
+                                "data": {"description": "出现异常", "done": True},
+                            }
+                        )
+                        yield self.generate_json_error(
+                            first_line_json["error"]["message"]
+                        )
                         return
                 except:
                     pass
@@ -109,42 +138,49 @@ class Pipe:
                     if sse.data.startswith("[DONE]"):
                         break
                     sse_json = sse.json()
-                    if 'choices' in sse_json and isinstance(sse_json['choices'], list) \
-                        and len(sse_json['choices']) > 0 and 'delta' in sse_json['choices'][0]:
-                        delta = sse_json['choices'][0]['delta']
-                        if 'reasoning_content' in delta:
-                            reasoning_content = delta['reasoning_content']
+                    if (
+                        "choices" in sse_json
+                        and isinstance(sse_json["choices"], list)
+                        and len(sse_json["choices"]) > 0
+                        and "delta" in sse_json["choices"][0]
+                    ):
+                        delta = sse_json["choices"][0]["delta"]
+                        if "reasoning_content" in delta:
+                            reasoning_content = delta["reasoning_content"]
                             if reasoning_content:
                                 if state != State.THINKING:
-                                        state = State.THINKING
-                                        yield "<think>"
+                                    state = State.THINKING
+                                    yield "<think>"
                                 yield reasoning_content
-                        if 'content' in delta:
-                            content = delta['content']
+                        if "content" in delta:
+                            content = delta["content"]
                             if content:
                                 if state == State.THINKING:
-                                        state = State.CONTENT
-                                        yield "</think>"
+                                    state = State.CONTENT
+                                    yield "</think>"
                                 yield content
         except Exception as e:
+            await __event_emitter__(
+                {
+                    "type": "status",
+                    "data": {"description": "出现异常", "done": True},
+                }
+            )
             yield self.generate_json_error(str(e))
         return
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
+
     async def main():
         body = {
             "model": "test.deepseek-r1",
-            "messages": [
-                  {
-                    "role": "user",
-                    "content": "你好"
-                  }
-                ]
+            "messages": [{"role": "user", "content": "你好"}],
         }
         pipe = Pipe()
         async for item in pipe.pipe(body):
             print(item, end="")
 
     import asyncio
+
     asyncio.run(main())
